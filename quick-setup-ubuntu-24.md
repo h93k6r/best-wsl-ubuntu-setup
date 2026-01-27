@@ -16,6 +16,24 @@ status for every step. A full log is saved to `~/quick-setup-ubuntu-24.log`.
 bash quick-setup-ubuntu-24.sh
 ```
 
+Interactive wizard (step-by-step selection):
+
+```bash
+bash quick-setup-ubuntu-24.sh --interactive
+```
+
+Or via environment variable:
+
+```bash
+INTERACTIVE=1 bash quick-setup-ubuntu-24.sh
+```
+
+Force non-interactive mode (ignore prompts even if `INTERACTIVE=1`):
+
+```bash
+bash quick-setup-ubuntu-24.sh --non-interactive
+```
+
 Optional: make it executable.
 
 ```bash
@@ -32,6 +50,13 @@ chmod +x quick-setup-ubuntu-24.sh
 - Installs optional tools controlled by env vars (see below).
 - Collects errors and prints a clean summary at the end.
 - Saves full output to `~/quick-setup-ubuntu-24.log`.
+
+## Interactive mode notes
+
+- Requires a TTY (run in a terminal).
+- Prompts for tools step-by-step with defaults.
+- Auto-enables required dependencies (for example, Node when npm tools are selected).
+- Hides WSL-only options when not running inside WSL.
 
 ## Configuration (environment variables)
 

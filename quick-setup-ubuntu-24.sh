@@ -35,6 +35,7 @@ GIT_EMAIL="${GIT_EMAIL:-}"
 GEMINI_API_KEY="${GEMINI_API_KEY:-}"
 
 LOG_FILE="${LOG_FILE:-$HOME/quick-setup-ubuntu-24.log}"
+INTERACTIVE="${INTERACTIVE:-0}"
 
 if [ -t 1 ]; then
   BOLD=$'\033[1m'
@@ -63,6 +64,38 @@ log_error() { printf "%b\n" "${RED}ERROR${RESET} $*"; }
 log_success() { printf "%b\n" "${GREEN}OK${RESET} $*"; }
 log_skip() { printf "%b\n" "${YELLOW}SKIP${RESET} $*"; }
 log_tip() { printf "%b\n" "${BLUE}TIP${RESET} $*"; }
+
+usage() {
+  cat <<'EOF'
+Usage: quick-setup-ubuntu-24.sh [--interactive]
+
+Options:
+  -i, --interactive    Run the interactive setup wizard.
+  --non-interactive    Force non-interactive mode.
+  -h, --help           Show this help message.
+EOF
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -i|--interactive)
+        INTERACTIVE=1
+        ;;
+      --non-interactive)
+        INTERACTIVE=0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        log_warn "Unknown argument: $1"
+        ;;
+    esac
+    shift
+  done
+}
 
 errors=()
 manual_actions=()
@@ -131,6 +164,328 @@ get_latest_github_tag() {
   fi
 }
 
+prompt_yes_no() {
+  local question="$1"
+  local default="${2:-1}"
+  local reply=""
+  local prompt="y/N"
+
+  if [ "$default" = "1" ]; then
+    prompt="Y/n"
+  fi
+
+  while true; do
+    read -r -p "$(printf "%b" "${BLUE}?${RESET} ${question} [${prompt}] ")" reply
+    case "$reply" in
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+      "")
+        if [ "$default" = "1" ]; then
+          return 0
+        fi
+        return 1
+        ;;
+      *)
+        log_warn "Please answer y or n."
+        ;;
+    esac
+  done
+}
+
+prompt_text() {
+  local question="$1"
+  local default="${2:-}"
+  local reply=""
+  local hint=""
+
+  if [ -n "$default" ]; then
+    hint="[$default]"
+  else
+    hint="(leave blank to skip)"
+  fi
+
+  read -r -p "$(printf "%b" "${BLUE}?${RESET} ${question} ${hint}: ")" reply
+  if [ -z "$reply" ]; then
+    reply="$default"
+  fi
+  printf "%s" "$reply"
+}
+
+prompt_secret() {
+  local question="$1"
+  local reply=""
+  read -r -s -p "$(printf "%b" "${BLUE}?${RESET} ${question}: ")" reply
+  printf "\n"
+  printf "%s" "$reply"
+}
+
+print_choice() {
+  local label="$1"
+  local value="${2:-0}"
+  if [ "$value" = "1" ]; then
+    printf "%b\n" "${GREEN}ON${RESET}  ${label}"
+  else
+    printf "%b\n" "${RED}OFF${RESET} ${label}"
+  fi
+}
+
+print_value() {
+  local label="$1"
+  local value="$2"
+  printf "%b\n" "${CYAN}${label}:${RESET} ${value}"
+}
+
+interactive_wizard() {
+  if [ ! -t 0 ]; then
+    log_error "Interactive mode requires a TTY."
+    exit 1
+  fi
+
+  local current_tz=""
+  local needs_node=0
+
+  log_step "Interactive mode"
+  log_info "We will walk through the setup step by step."
+  log_tip "Press Enter to accept the default shown in brackets."
+
+  if prompt_yes_no "Install core packages (apt update/upgrade + essentials)?" "$INSTALL_CORE_PACKAGES"; then
+    INSTALL_CORE_PACKAGES=1
+  else
+    INSTALL_CORE_PACKAGES=0
+  fi
+
+  current_tz=$(get_current_timezone)
+  if [ -n "$current_tz" ]; then
+    log_info "Detected timezone: $current_tz"
+  fi
+
+  if prompt_yes_no "Set timezone now?" "$SET_TIMEZONE"; then
+    SET_TIMEZONE=1
+    TARGET_TIMEZONE=$(prompt_text "Timezone (e.g. Asia/Taipei)" "$TARGET_TIMEZONE")
+  else
+    SET_TIMEZONE=0
+  fi
+
+  if prompt_yes_no "Install better-rm?" "$INSTALL_BETTER_RM"; then
+    INSTALL_BETTER_RM=1
+  else
+    INSTALL_BETTER_RM=0
+  fi
+
+  if prompt_yes_no "Install Rust toolchain (rustup)?" "$INSTALL_RUST"; then
+    INSTALL_RUST=1
+  else
+    INSTALL_RUST=0
+  fi
+
+  if [ "$INSTALL_RUST" -eq 1 ]; then
+    if prompt_yes_no "Install yazi (requires Rust)?" "$INSTALL_YAZI"; then
+      INSTALL_YAZI=1
+    else
+      INSTALL_YAZI=0
+    fi
+  else
+    INSTALL_YAZI=0
+    log_info "Skipping yazi because Rust is disabled."
+  fi
+
+  if prompt_yes_no "Install Node.js via nvm?" "$INSTALL_NODE"; then
+    INSTALL_NODE=1
+    NODE_VERSION=$(prompt_text "Node.js version" "$NODE_VERSION")
+  else
+    INSTALL_NODE=0
+  fi
+
+  if prompt_yes_no "Install Starship prompt?" "$INSTALL_STARSHIP"; then
+    INSTALL_STARSHIP=1
+  else
+    INSTALL_STARSHIP=0
+  fi
+
+  if prompt_yes_no "Install fzf?" "$INSTALL_FZF"; then
+    INSTALL_FZF=1
+  else
+    INSTALL_FZF=0
+  fi
+
+  if prompt_yes_no "Run git setup (@willh/git-setup)?" "$RUN_GIT_SETUP"; then
+    RUN_GIT_SETUP=1
+    GIT_NAME=$(prompt_text "Git user name" "$GIT_NAME")
+    GIT_EMAIL=$(prompt_text "Git user email" "$GIT_EMAIL")
+    if [ -z "$GIT_NAME" ] || [ -z "$GIT_EMAIL" ]; then
+      log_warn "Git name/email missing. Git setup will be skipped."
+      RUN_GIT_SETUP=0
+    fi
+  else
+    RUN_GIT_SETUP=0
+  fi
+
+  if [ "$IS_WSL" -eq 1 ]; then
+    if prompt_yes_no "Configure Git Credential Manager from Windows (WSL)?" "$CONFIG_GIT_GCM_WSL"; then
+      CONFIG_GIT_GCM_WSL=1
+    else
+      CONFIG_GIT_GCM_WSL=0
+    fi
+
+    if prompt_yes_no "Add WSL local IP helper to ~/.bashrc?" "$ENABLE_WSL_LOCAL_VAR"; then
+      ENABLE_WSL_LOCAL_VAR=1
+    else
+      ENABLE_WSL_LOCAL_VAR=0
+    fi
+  else
+    CONFIG_GIT_GCM_WSL=0
+    ENABLE_WSL_LOCAL_VAR=0
+  fi
+
+  if prompt_yes_no "Configure Azure DevOps git auth setting?" "$CONFIG_AZURE_DEVOPS_GIT"; then
+    CONFIG_AZURE_DEVOPS_GIT=1
+  else
+    CONFIG_AZURE_DEVOPS_GIT=0
+  fi
+
+  if prompt_yes_no "Install GitHub CLI (gh)?" "$INSTALL_GH"; then
+    INSTALL_GH=1
+  else
+    INSTALL_GH=0
+  fi
+
+  if prompt_yes_no "Install GitHub Copilot CLI?" "$INSTALL_COPILOT"; then
+    INSTALL_COPILOT=1
+  else
+    INSTALL_COPILOT=0
+  fi
+
+  if prompt_yes_no "Install AIChat?" "$INSTALL_AICHAT"; then
+    INSTALL_AICHAT=1
+    if prompt_yes_no "Sync AIChat models after install?" "$AICHAT_SYNC_MODELS"; then
+      AICHAT_SYNC_MODELS=1
+    else
+      AICHAT_SYNC_MODELS=0
+    fi
+    if prompt_yes_no "Set GEMINI_API_KEY now?" 0; then
+      GEMINI_API_KEY=$(prompt_secret "GEMINI_API_KEY")
+    fi
+  else
+    INSTALL_AICHAT=0
+    AICHAT_SYNC_MODELS=0
+  fi
+
+  if prompt_yes_no "Install uv (Python toolchain)?" "$INSTALL_UV"; then
+    INSTALL_UV=1
+  else
+    INSTALL_UV=0
+  fi
+
+  if prompt_yes_no "Install Codex CLI?" "$INSTALL_CODEX"; then
+    INSTALL_CODEX=1
+  else
+    INSTALL_CODEX=0
+  fi
+
+  if prompt_yes_no "Install Gemini CLI?" "$INSTALL_GEMINI"; then
+    INSTALL_GEMINI=1
+  else
+    INSTALL_GEMINI=0
+  fi
+
+  if prompt_yes_no "Install Claude Code CLI?" "$INSTALL_CLAUDE"; then
+    INSTALL_CLAUDE=1
+  else
+    INSTALL_CLAUDE=0
+  fi
+
+  if prompt_yes_no "Install SuperClaude (requires uvx)?" "$INSTALL_SUPERCLAUDE"; then
+    INSTALL_SUPERCLAUDE=1
+  else
+    INSTALL_SUPERCLAUDE=0
+  fi
+
+  if prompt_yes_no "Install Azure CLI?" "$INSTALL_AZURE_CLI"; then
+    INSTALL_AZURE_CLI=1
+  else
+    INSTALL_AZURE_CLI=0
+  fi
+
+  if prompt_yes_no "Install Google Cloud SDK?" "$INSTALL_GCLOUD"; then
+    INSTALL_GCLOUD=1
+  else
+    INSTALL_GCLOUD=0
+  fi
+
+  if [ "$RUN_GIT_SETUP" -eq 1 ] || [ "$INSTALL_COPILOT" -eq 1 ] \
+    || [ "$INSTALL_CODEX" -eq 1 ] || [ "$INSTALL_GEMINI" -eq 1 ] \
+    || [ "$INSTALL_CLAUDE" -eq 1 ]; then
+    needs_node=1
+  fi
+  if [ "$needs_node" -eq 1 ] && [ "$INSTALL_NODE" -ne 1 ]; then
+    log_warn "Selected tools require npm/Node. Enabling Node.js install."
+    INSTALL_NODE=1
+    if [ -z "$NODE_VERSION" ]; then
+      NODE_VERSION="22"
+    fi
+  fi
+
+  if [ "$INSTALL_SUPERCLAUDE" -eq 1 ] && [ "$INSTALL_UV" -ne 1 ]; then
+    log_warn "SuperClaude requires uvx. Enabling uv install."
+    INSTALL_UV=1
+  fi
+
+  log_step "Selection summary"
+  print_choice "Core packages" "$INSTALL_CORE_PACKAGES"
+  print_choice "Set timezone" "$SET_TIMEZONE"
+  if [ "$SET_TIMEZONE" -eq 1 ]; then
+    print_value "Timezone" "$TARGET_TIMEZONE"
+  fi
+  print_choice "better-rm" "$INSTALL_BETTER_RM"
+  print_choice "Rust" "$INSTALL_RUST"
+  print_choice "yazi" "$INSTALL_YAZI"
+  print_choice "Node.js (nvm)" "$INSTALL_NODE"
+  if [ "$INSTALL_NODE" -eq 1 ]; then
+    print_value "Node version" "$NODE_VERSION"
+  fi
+  print_choice "Starship" "$INSTALL_STARSHIP"
+  print_choice "fzf" "$INSTALL_FZF"
+  print_choice "Git setup" "$RUN_GIT_SETUP"
+  if [ -n "$GIT_NAME" ]; then
+    print_value "Git name" "$GIT_NAME"
+  fi
+  if [ -n "$GIT_EMAIL" ]; then
+    print_value "Git email" "$GIT_EMAIL"
+  fi
+  if [ "$IS_WSL" -eq 1 ]; then
+    print_choice "Git Credential Manager (WSL)" "$CONFIG_GIT_GCM_WSL"
+    print_choice "WSL local IP helper" "$ENABLE_WSL_LOCAL_VAR"
+  fi
+  print_choice "Azure DevOps git auth" "$CONFIG_AZURE_DEVOPS_GIT"
+  print_choice "GitHub CLI" "$INSTALL_GH"
+  print_choice "Copilot CLI" "$INSTALL_COPILOT"
+  print_choice "AIChat" "$INSTALL_AICHAT"
+  if [ "$INSTALL_AICHAT" -eq 1 ]; then
+    print_choice "AIChat sync models" "$AICHAT_SYNC_MODELS"
+    if [ -n "$GEMINI_API_KEY" ]; then
+      print_value "Gemini API key" "set"
+    else
+      print_value "Gemini API key" "not set"
+    fi
+  fi
+  print_choice "uv" "$INSTALL_UV"
+  print_choice "Codex CLI" "$INSTALL_CODEX"
+  print_choice "Gemini CLI" "$INSTALL_GEMINI"
+  print_choice "Claude Code" "$INSTALL_CLAUDE"
+  print_choice "SuperClaude" "$INSTALL_SUPERCLAUDE"
+  print_choice "Azure CLI" "$INSTALL_AZURE_CLI"
+  print_choice "Google Cloud SDK" "$INSTALL_GCLOUD"
+
+  if ! prompt_yes_no "Proceed with these selections?" 1; then
+    log_warn "Setup canceled by user."
+    exit 0
+  fi
+
+  log_success "Selections locked. Let's go!"
+}
+
+parse_args "$@"
+
 if ! touch "$LOG_FILE" 2>/dev/null; then
   printf "ERROR: cannot write log file: %s\n" "$LOG_FILE" >&2
   exit 1
@@ -166,6 +521,10 @@ if [ "$IS_WSL" -eq 1 ]; then
   log_success "WSL detected."
 else
   log_warn "WSL not detected. WSL-only steps will be skipped."
+fi
+
+if is_enabled "$INTERACTIVE"; then
+  interactive_wizard
 fi
 
 log_step "Checking sudo access"
